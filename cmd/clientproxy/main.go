@@ -80,7 +80,7 @@ func run(configPath string) error {
 }
 
 func main() {
-	configPath := "/etc/clientproxyd.toml"
+	configPath := "/etc/clientproxy.toml"
 	if len(os.Args) > 1 {
 		configPath = os.Args[1]
 	}
