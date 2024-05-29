@@ -10,4 +10,4 @@ For general usage instructions, see:
 https://github.com/daaku/caddy-clientproxy
 
 Documentation for the Go libary:
-https://pkg.go.dev/github.com/daaku.org/clientproxy
+https://pkg.go.dev/github.com/daaku/clientproxy
