@@ -20,12 +20,6 @@ import (
 // URL must contain the scheme, and the path must be correctly set to the
 // secret expected by the server.
 func DialAndServe(ctx context.Context, url string, h http.Handler) error {
-	ctx, cancel := context.WithCancel(ctx)
-
-	// this will ensure our background goroutine below will be released if our
-	// connection fails for reasons besides a context cancelation.
-	defer cancel()
-
 	u, err := urlp.Parse(url)
 	if err != nil {
 		return err
@@ -66,10 +60,9 @@ func DialAndServe(ctx context.Context, url string, h http.Handler) error {
 	}
 	// close the connection if the context is canceled. this will release the
 	// ServeConn and we'll return from the outer function.
-	go func() {
-		<-ctx.Done()
+	context.AfterFunc(ctx, func() {
 		conn.Close()
-	}()
+	})
 	h2s.ServeConn(conn, &http2.ServeConnOpts{
 		Context: ctx,
 		Handler: h,
