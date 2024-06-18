@@ -3,7 +3,6 @@
 package clientproxy
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -11,15 +10,15 @@ import (
 	"net"
 	"net/http"
 	urlp "net/url"
+	"strings"
 	"sync/atomic"
 
 	"golang.org/x/net/http2"
 )
 
 // DialAndServe connects to the given URL and serves the provided handler. The
-// URL must contain the scheme, and the path must be correctly set to the
-// secret expected by the server.
-func DialAndServe(ctx context.Context, url string, h http.Handler) error {
+// URL must contain the scheme, and the secret must be as set to match the server.
+func DialAndServe(ctx context.Context, url string, secret string, h http.Handler) error {
 	u, err := urlp.Parse(url)
 	if err != nil {
 		return err
@@ -43,13 +42,13 @@ func DialAndServe(ctx context.Context, url string, h http.Handler) error {
 		return fmt.Errorf("clientproxy: DialAndServe: %w", err)
 	}
 	defer conn.Close() // defensive close, ServeConn will handle this for us
-	var b bytes.Buffer
-	b.WriteString("GET ")
-	b.WriteString(u.RequestURI())
-	b.WriteString(" HTTP/1.1\r\nHost: ")
-	b.WriteString(u.Hostname())
-	b.WriteString("\r\n\r\n")
-	if _, err := conn.Write(b.Bytes()); err != nil {
+	b := strings.Join([]string{
+		"GET ", u.RequestURI(), " HTTP/1.1\r\n",
+		"Host: ", u.Hostname(), "\r\n",
+		"X-Client-Proxy: ", secret, "\r\n",
+		"\r\n",
+	}, "")
+	if _, err := conn.Write([]byte(b)); err != nil {
 		return err
 	}
 	var lastErrType atomic.Value

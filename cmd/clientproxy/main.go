@@ -20,6 +20,7 @@ import (
 
 type Proxy struct {
 	Register string
+	Secret   string
 	Forward  string
 }
 
@@ -35,7 +36,7 @@ func serve(ctx context.Context, p Proxy) error {
 	rp := httputil.NewSingleHostReverseProxy(u)
 	return backoff.RetryNotify(
 		func() error {
-			if err := clientproxy.DialAndServe(ctx, p.Register, rp); err != nil {
+			if err := clientproxy.DialAndServe(ctx, p.Register, p.Secret, rp); err != nil {
 				// context errors are permanent, others are not
 				if ctx.Err() == nil {
 					return err
