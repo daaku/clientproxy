@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	"github.com/daaku/clientproxy"
 	"github.com/daaku/errgroup"
+	"github.com/daaku/http2nc"
 	"github.com/pelletier/go-toml/v2"
 	"github.com/pkg/errors"
 )
@@ -33,10 +35,24 @@ func serve(ctx context.Context, p Proxy) error {
 	if err != nil {
 		return errors.WithStack(err)
 	}
-	rp := httputil.NewSingleHostReverseProxy(u)
+
+	var h http.Handler
+	switch u.Scheme {
+	case "http", "https":
+		h = httputil.NewSingleHostReverseProxy(u)
+	case "tcp":
+		h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if err := http2nc.DialConnect(w, r, u.Host); err != nil {
+				log.Println(err)
+			}
+		})
+	default:
+		return errors.Errorf("unknown forward: %s", p.Forward)
+	}
+
 	return backoff.RetryNotify(
 		func() error {
-			if err := clientproxy.DialAndServe(ctx, p.Register, p.Secret, rp); err != nil {
+			if err := clientproxy.DialAndServe(ctx, p.Register, p.Secret, h); err != nil {
 				// context errors are permanent, others are not
 				if ctx.Err() == nil {
 					return err
@@ -50,7 +66,7 @@ func serve(ctx context.Context, p Proxy) error {
 			backoff.WithMaxElapsedTime(0),
 		),
 		func(err error, _ time.Duration) {
-			log.Println(err)
+			log.Printf("for %s: %v", p.Register, err)
 		},
 	)
 }
