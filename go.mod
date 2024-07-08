@@ -8,7 +8,7 @@ require (
 	github.com/daaku/http2nc v0.0.0-20240617182529-081defde4f22
 	github.com/pelletier/go-toml/v2 v2.2.2
 	github.com/pkg/errors v0.9.1
-	golang.org/x/net v0.26.0
+	golang.org/x/net v0.27.0
 )
 
 require (
