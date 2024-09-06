@@ -8,10 +8,10 @@ require (
 	github.com/daaku/http2nc v0.0.0-20240617182529-081defde4f22
 	github.com/pelletier/go-toml/v2 v2.2.3
 	github.com/pkg/errors v0.9.1
-	golang.org/x/net v0.28.0
+	golang.org/x/net v0.29.0
 )
 
 require (
 	golang.org/x/sync v0.8.0 // indirect
-	golang.org/x/text v0.17.0 // indirect
+	golang.org/x/text v0.18.0 // indirect
 )
