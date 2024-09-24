@@ -10,11 +10,23 @@ import (
 	"net"
 	"net/http"
 	urlp "net/url"
+	"os"
 	"strings"
-	"sync/atomic"
+	"time"
 
-	"golang.org/x/net/http2"
+	"github.com/hashicorp/yamux"
 )
+
+var yamuxConfig = &yamux.Config{
+	AcceptBacklog:          256,
+	EnableKeepAlive:        true,
+	KeepAliveInterval:      5 * time.Minute,
+	ConnectionWriteTimeout: 10 * time.Second,
+	MaxStreamWindowSize:    256 * 1024,
+	StreamCloseTimeout:     5 * time.Minute,
+	StreamOpenTimeout:      75 * time.Second,
+	LogOutput:              os.Stderr,
+}
 
 // DialAndServe connects to the given URL and serves the provided handler. The
 // URL must contain the scheme, and the secret must be as set to match the server.
@@ -51,27 +63,21 @@ func DialAndServe(ctx context.Context, url string, secret string, h http.Handler
 	if _, err := conn.Write([]byte(b)); err != nil {
 		return err
 	}
-	var lastErrType atomic.Value
-	h2s := &http2.Server{
-		CountError: func(errType string) {
-			lastErrType.Store(errType)
-		},
+	yamuxServer, err := yamux.Server(conn, yamuxConfig)
+	if err != nil {
+		return fmt.Errorf("clientproxy: DialAndServe: %w", err)
 	}
 	// close the connection if the context is canceled. this will release the
-	// ServeConn and we'll return from the outer function.
+	// http.Server and we'll return from the outer function.
 	context.AfterFunc(ctx, func() {
-		conn.Close()
+		yamuxServer.Close()
 	})
-	h2s.ServeConn(conn, &http2.ServeConnOpts{
-		Context: ctx,
-		Handler: h,
-	})
-	if errType, ok := lastErrType.Load().(string); ok {
-		return fmt.Errorf("clientproxy: DialAndServe: ServeConn failed with %s", errType)
-	}
-	// if the contextErr is not set, we failed for an unknown reason.
-	if ctx.Err() != nil {
-		return nil
+	if err := http.Serve(yamuxServer, h); err != nil {
+		// if the contextErr is not set, we failed for an unknown reason.
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("clientproxy: DialAndServe: %w", err)
 	}
 	return errors.New("clientproxy: DialAndServe: unknown error")
 }
