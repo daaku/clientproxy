@@ -62,8 +62,11 @@ func serve(ctx context.Context, p Proxy) error {
 			}
 			return nil
 		},
-		backoff.NewExponentialBackOff(
-			backoff.WithMaxElapsedTime(0),
+		backoff.WithContext(
+			backoff.NewExponentialBackOff(
+				backoff.WithMaxElapsedTime(0),
+			),
+			ctx,
 		),
 		func(err error, _ time.Duration) {
 			log.Printf("for %s: %v", p.Register, err)
