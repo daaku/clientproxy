@@ -17,6 +17,7 @@ jobs:
     - run: go build ./cmd/clientproxy
     - run: tar cf clientproxy.tar clientproxy
     - uses: svenstaro/upload-release-action@v2
+      if: github.ref == 'refs/heads/main'
       with:
         overwrite: true
         repo_token: ${{ secrets.GITHUB_TOKEN }}
