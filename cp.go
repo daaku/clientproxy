@@ -28,10 +28,21 @@ var yamuxConfig = &yamux.Config{
 	LogOutput:              os.Stderr,
 }
 
-// DialAndServe connects to the given URL and serves the provided handler. The
+// Config to
+type Config struct {
+	URL     string
+	Secret  string
+	Name    string
+	Handler http.Handler
+}
+
+// DialAndServe dials and serves the given config. The
 // URL must contain the scheme, and the secret must be as set to match the server.
-func DialAndServe(ctx context.Context, url string, secret string, h http.Handler) error {
-	u, err := urlp.Parse(url)
+func DialAndServe(ctx context.Context, c Config) error {
+	if c.URL == "" || c.Secret == "" || c.Name == "" || c.Handler == nil {
+		return fmt.Errorf("clientproxy: incomplete configuration")
+	}
+	u, err := urlp.Parse(c.URL)
 	if err != nil {
 		return err
 	}
@@ -57,7 +68,8 @@ func DialAndServe(ctx context.Context, url string, secret string, h http.Handler
 	b := strings.Join([]string{
 		"GET ", u.RequestURI(), " HTTP/1.1\r\n",
 		"Host: ", u.Hostname(), "\r\n",
-		"X-Client-Proxy: ", secret, "\r\n",
+		"X-Client-Proxy-Secret: ", c.Secret, "\r\n",
+		"X-Client-Proxy-Name: ", c.Name, "\r\n",
 		"\r\n",
 	}, "")
 	if _, err := conn.Write([]byte(b)); err != nil {
@@ -72,7 +84,7 @@ func DialAndServe(ctx context.Context, url string, secret string, h http.Handler
 	context.AfterFunc(ctx, func() {
 		yamuxServer.Close()
 	})
-	if err := http.Serve(yamuxServer, h); err != nil {
+	if err := http.Serve(yamuxServer, c.Handler); err != nil {
 		// if the contextErr is not set, we failed for an unknown reason.
 		if ctx.Err() != nil {
 			return nil

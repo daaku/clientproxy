@@ -21,16 +21,17 @@ import (
 )
 
 type Proxy struct {
-	Register string
-	Secret   string
-	Forward  string
+	Name    string
+	Forward string
 }
 
 type config struct {
-	Proxy []Proxy
+	URL    string
+	Secret string
+	Proxy  []Proxy
 }
 
-func serve(ctx context.Context, p Proxy) error {
+func serve(ctx context.Context, c config, p Proxy) error {
 	u, err := url.Parse(p.Forward)
 	if err != nil {
 		return errors.WithStack(err)
@@ -52,7 +53,13 @@ func serve(ctx context.Context, p Proxy) error {
 
 	return backoff.RetryNotify(
 		func() error {
-			if err := clientproxy.DialAndServe(ctx, p.Register, p.Secret, h); err != nil {
+			cc := clientproxy.Config{
+				URL:     c.URL,
+				Secret:  c.Secret,
+				Name:    p.Name,
+				Handler: h,
+			}
+			if err := clientproxy.DialAndServe(ctx, cc); err != nil {
 				// context errors are permanent, others are not
 				if ctx.Err() == nil {
 					return err
@@ -69,7 +76,7 @@ func serve(ctx context.Context, p Proxy) error {
 			ctx,
 		),
 		func(err error, _ time.Duration) {
-			log.Printf("for %s: %v", p.Register, err)
+			log.Printf("for %s: %v", p.Name, err)
 		},
 	)
 }
@@ -93,7 +100,7 @@ func run(configPath string) error {
 	for _, p := range c.Proxy {
 		go func() {
 			defer eg.Done()
-			eg.Error(serve(ctx, p))
+			eg.Error(serve(ctx, c, p))
 		}()
 	}
 	return eg.Wait()
