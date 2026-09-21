@@ -20,7 +20,7 @@ import (
 var yamuxConfig = &yamux.Config{
 	AcceptBacklog:          256,
 	EnableKeepAlive:        true,
-	KeepAliveInterval:      5 * time.Minute,
+	KeepAliveInterval:      30 * time.Second,
 	ConnectionWriteTimeout: 10 * time.Second,
 	MaxStreamWindowSize:    256 * 1024,
 	StreamCloseTimeout:     5 * time.Minute,
@@ -28,7 +28,6 @@ var yamuxConfig = &yamux.Config{
 	LogOutput:              os.Stderr,
 }
 
-// Config to
 type Config struct {
 	URL     string
 	Secret  string
@@ -75,13 +74,13 @@ func DialAndServe(ctx context.Context, c Config) error {
 	if _, err := conn.Write([]byte(b)); err != nil {
 		return err
 	}
-	return serve(ctx, conn, c)
+	return serve(ctx, conn, yamuxConfig, c.Handler)
 }
 
 // serve multiplexes an already dialed connection into HTTP requests. It
 // returns when the session ends, or when the context is canceled.
-func serve(ctx context.Context, conn net.Conn, c Config) error {
-	yamuxServer, err := yamux.Server(conn, yamuxConfig)
+func serve(ctx context.Context, conn net.Conn, cfg *yamux.Config, h http.Handler) error {
+	yamuxServer, err := yamux.Server(conn, cfg)
 	if err != nil {
 		return fmt.Errorf("clientproxy: DialAndServe: %w", err)
 	}
@@ -93,7 +92,7 @@ func serve(ctx context.Context, conn net.Conn, c Config) error {
 	defer stop()
 	// once the session is gone the only thing left to do is to return and
 	// let the caller reconnect, so accept errors are made fatal.
-	err = http.Serve(&fatalAcceptListener{Listener: yamuxServer}, c.Handler)
+	err = http.Serve(&fatalAcceptListener{Listener: yamuxServer}, h)
 	// if the contextErr is not set, we failed for an unknown reason.
 	if ctx.Err() != nil {
 		return nil

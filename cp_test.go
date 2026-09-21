@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,16 +18,13 @@ import (
 
 const secret = "s3cret"
 
-// quietYamuxLog silences the shared yamux config for the duration of a test
-// and returns a copy of it for the yamux sessions the test creates itself.
-func quietYamuxLog(t *testing.T) *yamux.Config {
-	t.Helper()
-	peer := *yamuxConfig
-	peer.LogOutput = io.Discard
-	before := yamuxConfig.LogOutput
-	yamuxConfig.LogOutput = io.Discard
-	t.Cleanup(func() { yamuxConfig.LogOutput = before })
-	return &peer
+// quietYamuxLog is a copy of the shared session configuration with logging
+// turned off. A test tunes that copy rather than the shared one, which yamux
+// reads from the keepalive goroutine of every session it made.
+func quietYamuxLog() *yamux.Config {
+	c := *yamuxConfig
+	c.LogOutput = io.Discard
+	return &c
 }
 
 // deadConn reads like a connection whose peer stopped answering, which the
@@ -43,29 +41,50 @@ func (deadConn) Read([]byte) (int, error) {
 
 func (deadConn) Write(p []byte) (int, error)      { return len(p), nil }
 func (deadConn) Close() error                     { return nil }
-func (deadConn) LocalAddr() net.Addr              { return deadAddr{} }
-func (deadConn) RemoteAddr() net.Addr             { return deadAddr{} }
+func (deadConn) LocalAddr() net.Addr              { return testAddr{} }
+func (deadConn) RemoteAddr() net.Addr             { return testAddr{} }
 func (deadConn) SetDeadline(time.Time) error      { return nil }
 func (deadConn) SetReadDeadline(time.Time) error  { return nil }
 func (deadConn) SetWriteDeadline(time.Time) error { return nil }
 
-type deadAddr struct{}
+type testAddr struct{}
 
-func (deadAddr) Network() string { return "tcp" }
-func (deadAddr) String() string  { return "10.0.7.8:35858->13.201.42.47:443" }
+func (testAddr) Network() string { return "tcp" }
+func (testAddr) String() string  { return "10.0.7.8:35858->13.201.42.47:443" }
 
-// A yamux session that cannot accept is over. The error it reports for a
-// stalled connection looks like a timeout to net/http, which then retried the
-// accept forever ("http: Accept error: ...; retrying in 1s") instead of
-// returning, so the caller never reconnected.
+// stalledConn is a connection that stopped answering: writes are accepted by
+// the kernel, reads never complete. Only the keepalive gives up on it.
+type stalledConn struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newStalledConn() *stalledConn { return &stalledConn{closed: make(chan struct{})} }
+
+func (c *stalledConn) Read([]byte) (int, error) {
+	<-c.closed
+	return 0, io.EOF
+}
+
+func (c *stalledConn) Write(p []byte) (int, error) { return len(p), nil }
+func (c *stalledConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return nil
+}
+
+func (c *stalledConn) LocalAddr() net.Addr              { return testAddr{} }
+func (c *stalledConn) RemoteAddr() net.Addr             { return testAddr{} }
+func (c *stalledConn) SetDeadline(time.Time) error      { return nil }
+func (c *stalledConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *stalledConn) SetWriteDeadline(time.Time) error { return nil }
+
+// serve must return so that the caller can reconnect, otherwise the process
+// sits in the "http: Accept error: ...; retrying in 1s" loop of net/http
+// forever, since that error looks like a timeout and therefore temporary.
 func TestServeEndsTemporaryAcceptErrors(t *testing.T) {
-	quietYamuxLog(t)
 	errs := make(chan error, 1)
 	go func() {
-		errs <- serve(context.Background(), deadConn{}, Config{
-			Name:    "test",
-			Handler: http.NotFoundHandler(),
-		})
+		errs <- serve(context.Background(), deadConn{}, quietYamuxLog(), http.NotFoundHandler())
 	}()
 	select {
 	case err := <-errs:
@@ -77,6 +96,27 @@ func TestServeEndsTemporaryAcceptErrors(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("serve did not return, the http.Server is retrying a fatal error")
+	}
+}
+
+// A connection that stopped answering is only visible through the keepalive,
+// so it must end serve as well.
+func TestServeEndsAStalledConnection(t *testing.T) {
+	cfg := quietYamuxLog()
+	cfg.KeepAliveInterval = 100 * time.Millisecond
+	cfg.ConnectionWriteTimeout = 100 * time.Millisecond
+	errs := make(chan error, 1)
+	go func() {
+		errs <- serve(context.Background(), newStalledConn(), cfg, http.NotFoundHandler())
+	}()
+	var err error
+	select {
+	case err = <-errs:
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not return, the stalled connection went unnoticed")
+	}
+	if !errors.Is(err, yamux.ErrKeepAliveTimeout) {
+		t.Errorf("serve returned %v, want it to wrap %v", err, yamux.ErrKeepAliveTimeout)
 	}
 }
 
@@ -114,19 +154,18 @@ func TestDialAndServeStopsOnContextCancel(t *testing.T) {
 	}
 }
 
-// startClient dials the caddy side of a connection, started by startPeer, and
-// serves the given handler with it. It returns the caddy side session, the
-// errors of DialAndServe and its cancel function.
+// startClient dials the peer started by startPeer and serves the given handler
+// over that connection. It returns the peer session, the errors of
+// DialAndServe and its cancel function.
 func startClient(t *testing.T, h http.Handler) (*yamux.Session, chan error, context.CancelFunc) {
 	t.Helper()
-	peerCfg := quietYamuxLog(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
 	peers := make(chan *yamux.Session, 1)
-	go startPeer(ln, peers, peerCfg)
+	go startPeer(ln, peers, quietYamuxLog())
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	errs := make(chan error, 1)
