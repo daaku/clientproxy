@@ -64,7 +64,7 @@ func DialAndServe(ctx context.Context, c Config) error {
 	if err != nil {
 		return fmt.Errorf("clientproxy: DialAndServe: %w", err)
 	}
-	defer conn.Close() // defensive close, ServeConn will handle this for us
+	defer conn.Close() // defensive close, the yamux session closes this for us
 	b := strings.Join([]string{
 		"GET ", u.RequestURI(), " HTTP/1.1\r\n",
 		"Host: ", u.Hostname(), "\r\n",
@@ -75,21 +75,58 @@ func DialAndServe(ctx context.Context, c Config) error {
 	if _, err := conn.Write([]byte(b)); err != nil {
 		return err
 	}
+	return serve(ctx, conn, c)
+}
+
+// serve multiplexes an already dialed connection into HTTP requests. It
+// returns when the session ends, or when the context is canceled.
+func serve(ctx context.Context, conn net.Conn, c Config) error {
 	yamuxServer, err := yamux.Server(conn, yamuxConfig)
 	if err != nil {
 		return fmt.Errorf("clientproxy: DialAndServe: %w", err)
 	}
 	// close the connection if the context is canceled. this will release the
 	// http.Server and we'll return from the outer function.
-	context.AfterFunc(ctx, func() {
+	stop := context.AfterFunc(ctx, func() {
 		yamuxServer.Close()
 	})
-	if err := http.Serve(yamuxServer, c.Handler); err != nil {
-		// if the contextErr is not set, we failed for an unknown reason.
-		if ctx.Err() != nil {
-			return nil
-		}
+	defer stop()
+	// once the session is gone the only thing left to do is to return and
+	// let the caller reconnect, so accept errors are made fatal.
+	err = http.Serve(&fatalAcceptListener{Listener: yamuxServer}, c.Handler)
+	// if the contextErr is not set, we failed for an unknown reason.
+	if ctx.Err() != nil {
+		return nil
+	}
+	if err != nil {
 		return fmt.Errorf("clientproxy: DialAndServe: %w", err)
 	}
 	return errors.New("clientproxy: DialAndServe: unknown error")
 }
+
+// fatalAcceptListener makes the accept errors of a yamux session fatal for
+// an http.Server. yamux hands back the error that ended the session, and a
+// connection that stopped answering reads makes that look like a timeout,
+// which net/http treats as a transient accept failure: it logs
+// "http: Accept error: ...; retrying in 1s" and spins forever, so the caller
+// never gets to reconnect. The session is over by then, hence we retry by
+// returning.
+type fatalAcceptListener struct {
+	net.Listener
+}
+
+func (l *fatalAcceptListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, &fatalAcceptError{err}
+	}
+	return conn, nil
+}
+
+// fatalAcceptError forgets the net.Error behavior of the yamux error while
+// still unwrapping for errors.Is and errors.As.
+type fatalAcceptError struct {
+	error
+}
+
+func (e *fatalAcceptError) Unwrap() error { return e.error }
